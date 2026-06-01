@@ -119,6 +119,17 @@ export default function ProductList() {
       width: 90,
       render: (r: string) => <Tag color={riskColors[r]}>{riskLabels[r]}</Tag>,
     },
+    {
+      title: '操作',
+      key: 'action',
+      width: 140,
+      render: (_: unknown, record: Fund) => (
+        <Space>
+          <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); navigate('/ai-assistant') }}>去跟进</Button>
+          <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); navigate(`/products/${record.id}`) }}>档案</Button>
+        </Space>
+      ),
+    },
   ]
 
   return (

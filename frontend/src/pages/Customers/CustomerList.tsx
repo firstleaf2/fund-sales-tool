@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Typography, Tag, message } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Typography, Tag, Space, message } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getCustomers, createCustomer } from '../../services/customerService'
+import { createFollowUp } from '../../services/followUpService'
+import { DatePicker } from 'antd'
 import type { Customer } from '../../types'
 
 const { Title } = Typography
@@ -30,6 +32,9 @@ export default function CustomerList() {
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
+  const [followForm] = Form.useForm()
+  const [followModalOpen, setFollowModalOpen] = useState(false)
+  const [followCustomerId, setFollowCustomerId] = useState<number | null>(null)
   const navigate = useNavigate()
 
   const fetchCustomers = async () => {
@@ -59,6 +64,23 @@ export default function CustomerList() {
     }
   }
 
+  const handleFollow = async () => {
+    try {
+      const values = await followForm.validateFields()
+      await createFollowUp({
+        customer_id: followCustomerId!,
+        contact_method: values.contact_method,
+        content: values.content,
+        follow_date: values.follow_date?.toISOString(),
+      })
+      message.success('跟进记录已添加')
+      setFollowModalOpen(false)
+      followForm.resetFields()
+    } catch {
+      // validation error
+    }
+  }
+
   const columns = [
     { title: '姓名', dataIndex: 'name', key: 'name' },
     {
@@ -75,6 +97,17 @@ export default function CustomerList() {
     },
     { title: '联系电话', dataIndex: 'phone', key: 'phone' },
     { title: '邮箱', dataIndex: 'email', key: 'email' },
+    {
+      title: '操作',
+      key: 'action',
+      width: 160,
+      render: (_: unknown, record: Customer) => (
+        <Space>
+          <Button type="link" size="small" onClick={(e: React.MouseEvent) => { e.stopPropagation(); setFollowCustomerId(record.id); setFollowModalOpen(true) }}>去跟进</Button>
+          <Button type="link" size="small" onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigate(`/customers/${record.id}`) }}>档案</Button>
+        </Space>
+      ),
+    },
   ]
 
   return (
@@ -121,6 +154,31 @@ export default function CustomerList() {
           </Form.Item>
           <Form.Item name="notes" label="备注">
             <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="新增跟进记录"
+        open={followModalOpen}
+        onOk={handleFollow}
+        onCancel={() => { setFollowModalOpen(false); followForm.resetFields() }}
+        okText="提交"
+        cancelText="取消"
+      >
+        <Form form={followForm} layout="vertical">
+          <Form.Item name="contact_method" label="联系方式" rules={[{ required: true, message: '请选择联系方式' }]}>
+            <Select options={[
+              { value: 'phone', label: '电话' },
+              { value: 'wechat', label: '微信' },
+              { value: 'meeting', label: '面谈' },
+              { value: 'email', label: '邮件' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="follow_date" label="跟进时间">
+            <DatePicker showTime style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="content" label="跟进内容" rules={[{ required: true, message: '请输入跟进内容' }]}>
+            <Input.TextArea rows={4} />
           </Form.Item>
         </Form>
       </Modal>
