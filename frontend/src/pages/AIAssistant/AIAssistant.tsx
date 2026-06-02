@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Input, Button, Card, Typography, Tag, Spin, List } from 'antd'
 import { SendOutlined, RobotOutlined, UserOutlined, PlusOutlined } from '@ant-design/icons'
-import { sendMessage, getMessages, getConversations } from '../../services/aiService'
+import { sendMessageStream, getMessages, getConversations } from '../../services/aiService'
 import ChatChart from '../../components/ChatChart'
 import type { ChatMessage } from '../../types'
 
@@ -42,27 +42,47 @@ export default function AIAssistant() {
 
     const userMessage: ChatMessage = { role: 'user', content: input.trim() }
     setMessages((prev) => [...prev, userMessage])
+    const currentInput = input.trim()
     setInput('')
     setLoading(true)
 
-    try {
-      const res = await sendMessage(userMessage.content, conversationId)
-      setConversationId(res.conversation_id)
-      localStorage.setItem(CONV_STORAGE_KEY, res.conversation_id)
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: res.reply,
-        sources: res.sources,
-        chart: res.chart,
-      }
-      setMessages((prev) => [...prev, assistantMessage])
-      // 刷新会话列表
-      getConversations().then(setConversations).catch(() => {})
-    } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: '抱歉，服务暂时不可用，请稍后重试。' }])
-    } finally {
-      setLoading(false)
-    }
+    // 先添加一个空的 assistant 消息，后续逐字填充
+    const assistantIdx = messages.length + 1
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
+
+    await sendMessageStream(currentInput, conversationId, {
+      onMeta: (sources, convId) => {
+        setConversationId(convId)
+        localStorage.setItem(CONV_STORAGE_KEY, convId)
+        setMessages((prev) => {
+          const updated = [...prev]
+          updated[assistantIdx] = { ...updated[assistantIdx], sources }
+          return updated
+        })
+      },
+      onContent: (chunk) => {
+        setMessages((prev) => {
+          const updated = [...prev]
+          updated[assistantIdx] = {
+            ...updated[assistantIdx],
+            content: updated[assistantIdx].content + chunk,
+          }
+          return updated
+        })
+      },
+      onDone: () => {
+        setLoading(false)
+        getConversations().then(setConversations).catch(() => {})
+      },
+      onError: (error) => {
+        setMessages((prev) => {
+          const updated = [...prev]
+          updated[assistantIdx] = { role: 'assistant', content: error || '抱歉，服务暂时不可用。' }
+          return updated
+        })
+        setLoading(false)
+      },
+    })
   }
 
   const handleNewConversation = () => {

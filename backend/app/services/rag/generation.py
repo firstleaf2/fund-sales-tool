@@ -47,7 +47,7 @@ FALLBACK_RESPONSES = {
 }
 
 
-async def generate_response(message: str, conversation_id: str | None = None, history: list[dict] | None = None) -> dict:
+async def generate_response(message: str, conversation_id: str | None = None, history: list[dict] | None = None, episodic_context: str = "") -> dict:
     """
     完整流程：意图识别 → RAG 检索 → 置信度判断 → RAG 回答 / Function Calling 回答
     """
@@ -56,6 +56,10 @@ async def generate_response(message: str, conversation_id: str | None = None, hi
 
     if history is None:
         history = []
+
+    # 如果有情景记忆，插入到 history 最前面作为系统上下文
+    if episodic_context:
+        history = [{"role": "system", "content": episodic_context}] + history
 
     # Step 1: 意图识别
     intent = await classify_intent_llm(message)
@@ -177,6 +181,88 @@ async def _generate_with_tools(client, message: str, intent: Intent, history: li
         temperature=0.7,
     )
     return response.choices[0].message.content or "抱歉，无法生成回答。"
+
+
+async def generate_response_stream(message: str, conversation_id: str | None = None, history: list[dict] | None = None, episodic_context: str = ""):
+    """
+    流式生成。yield 每个 token chunk。
+    先做意图识别和检索（非流式），然后流式生成回答。
+    """
+    if not conversation_id:
+        conversation_id = f"conv_{uuid.uuid4().hex[:8]}"
+
+    if history is None:
+        history = []
+
+    if episodic_context:
+        history = [{"role": "system", "content": episodic_context}] + history
+
+    intent = await classify_intent_llm(message)
+
+    retrieval_result = hybrid_retrieve(message, intent)
+    results = retrieval_result["results"]
+    confident = retrieval_result["confident"]
+
+    context = ""
+    sources = []
+    if results:
+        context_parts = []
+        for item in results:
+            context_parts.append(f"- {item['document']}")
+            meta = item.get("metadata", {})
+            if "fund_id" in meta:
+                sources.append({"type": "fund", "id": meta["fund_id"], "name": item["document"].split(" (")[0] if " (" in item["document"] else "基金"})
+            elif "customer_id" in meta:
+                doc = item["document"]
+                name = doc.split("客户:")[1].split(" -")[0] if "客户:" in doc else "客户"
+                sources.append({"type": "customer", "id": meta["customer_id"], "name": name})
+        context = "\n".join(context_parts)
+
+    if not OPENAI_API_KEY:
+        reply = FALLBACK_RESPONSES.get(intent, FALLBACK_RESPONSES[Intent.CHAT])
+        yield {"type": "meta", "sources": sources, "conversation_id": conversation_id}
+        yield {"type": "content", "data": reply}
+        yield {"type": "done"}
+        return
+
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+
+        yield {"type": "meta", "sources": sources, "conversation_id": conversation_id}
+
+        # Function Calling 路径不支持流式，先执行完再一次性输出
+        if not (confident and context) or intent == Intent.CUSTOMER_QUERY:
+            tool_result = await _generate_with_tools(client, message, intent, history)
+            yield {"type": "content", "data": tool_result}
+            yield {"type": "done"}
+            return
+
+        # RAG 路径：流式输出
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPTS[intent]},
+            *history,
+            {"role": "user", "content": f"用户问题: {message}\n\n系统数据:\n{context}\n\n请基于以上数据回答。"},
+        ]
+
+        stream = await client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7,
+            stream=True,
+        )
+
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield {"type": "content", "data": chunk.choices[0].delta.content}
+
+        yield {"type": "done"}
+
+    except Exception:
+        reply = FALLBACK_RESPONSES.get(intent, FALLBACK_RESPONSES[Intent.CHAT])
+        yield {"type": "content", "data": reply}
+        yield {"type": "done"}
 
 
 def _extract_chart(reply: str) -> dict | None:
